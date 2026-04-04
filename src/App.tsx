@@ -16,14 +16,26 @@ import { useFixedExpenseStore } from "@/store/fixedExpenseStore"
 import { useInvoiceStore } from "@/store/invoiceStore"
 import { useRevenueStore } from "@/store/revenueStore"
 import { seedStores } from "@/lib/seed"
+import { pullFromServer, initServerSync } from "@/lib/serverSync"
 
 function SeedInitializer() {
-  const { expenses, addExpense } = useFixedExpenseStore()
-  const { invoices, addInvoice } = useInvoiceStore()
-  const { revenues, setMonthRevenue } = useRevenueStore()
+  const { addExpense } = useFixedExpenseStore()
+  const { addInvoice } = useInvoiceStore()
+  const { setMonthRevenue } = useRevenueStore()
 
   useEffect(() => {
-    seedStores(expenses, invoices, revenues, addExpense, addInvoice, setMonthRevenue)
+    const init = async () => {
+      // 1. Charger depuis le serveur (source de vérité)
+      await pullFromServer()
+      // 2. Seed les données par défaut si vide (utilise l'état après pull)
+      const currentExpenses = useFixedExpenseStore.getState().expenses
+      const currentInvoices = useInvoiceStore.getState().invoices
+      const currentRevenues = useRevenueStore.getState().revenues
+      seedStores(currentExpenses, currentInvoices, currentRevenues, addExpense, addInvoice, setMonthRevenue)
+      // 3. Synchroniser chaque modification vers le serveur
+      initServerSync()
+    }
+    init()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
