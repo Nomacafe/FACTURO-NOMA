@@ -1,10 +1,10 @@
 {
-  "$schema": "https://railway.app/railway.schema.json",
-  "build": {
-    "buildCommand": "npm run railway:build"
-  },
-  "deploy": {
-    "startCommand": "NODE_ENV=production npm run start",
-    "healthcheckPath": "/api/health"
+    "$schema": "https://railway.app/railway.schema.json",
+    "build": {
+      "buildCommand": "npm install && npm run build && cd server && npm install"
+    },
+    "deploy": {
+      "startCommand": "cd server && node index.js",
+      "healthcheckPath": "/api/health"
+    }
   }
-}
