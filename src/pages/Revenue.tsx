@@ -129,7 +129,12 @@ export function Revenue() {
     [year, revenues, invoices, fixedExpenses]
   )
 
-  const totals = rows.reduce(
+  const currentYM = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`
+
+  // Ne compter que les mois déjà commencés (passés + en cours) — pas les mois futurs
+  const startedRows = rows.filter((r) => r.month <= currentYM)
+
+  const totals = startedRows.reduce(
     (acc, r) => ({
       cabrut: acc.cabrut + r.cabrut,
       totalChargesHT: acc.totalChargesHT + r.totalChargesHT,
@@ -140,6 +145,7 @@ export function Revenue() {
     { cabrut: 0, totalChargesHT: 0, tvaNette: 0, resultatBrut: 0, resultatNet: 0 }
   )
   const annualIS = totals.resultatBrut > 0 ? computeIS(totals.resultatBrut) : 0
+  const startedMonthsLabel = `Jan → ${MONTHS_SHORT[new Date().getMonth()]}`
 
   return (
     <div className="space-y-6">
@@ -173,11 +179,11 @@ export function Revenue() {
       {/* Annual KPIs */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         {[
-          { label: "CA Brut", value: totals.cabrut, color: "text-emerald-700" },
-          { label: "Charges totales", value: totals.totalChargesHT, color: "text-red-600" },
+          { label: `CA Brut (${startedMonthsLabel})`, value: totals.cabrut, color: "text-emerald-700" },
+          { label: `Charges (${startedMonthsLabel})`, value: totals.totalChargesHT, color: "text-red-600" },
           { label: "Résultat brut", value: totals.resultatBrut, color: totals.resultatBrut >= 0 ? "text-emerald-700" : "text-red-600" },
-          { label: "IS estimé (annuel)", value: annualIS, color: "text-amber-600" },
-          { label: "Résultat net", value: totals.resultatNet - annualIS + rows.reduce((s, r) => s + r.isEstime, 0) - annualIS, color: totals.resultatBrut - annualIS >= 0 ? "text-emerald-700" : "text-red-600" },
+          { label: "IS estimé", value: annualIS, color: "text-amber-600" },
+          { label: "Résultat net", value: totals.resultatBrut - annualIS, color: totals.resultatBrut - annualIS >= 0 ? "text-emerald-700" : "text-red-600" },
         ].map((kpi) => (
           <Card key={kpi.label}>
             <CardContent className="p-4">
@@ -300,7 +306,7 @@ export function Revenue() {
       {/* Annual summary row */}
       <div className="rounded-xl border-2 border-primary/20 bg-primary/5 p-4">
         <div className="flex items-center justify-between flex-wrap gap-4">
-          <p className="text-sm font-semibold">Bilan annuel {year}</p>
+          <p className="text-sm font-semibold">Bilan {year} · {startedMonthsLabel}</p>
           <div className="flex gap-6 text-sm flex-wrap">
             <span>CA : <strong className="text-emerald-700">{formatCurrency(totals.cabrut)}</strong></span>
             <span>Charges : <strong className="text-red-600">{formatCurrency(totals.totalChargesHT)}</strong></span>
