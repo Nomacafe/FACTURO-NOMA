@@ -293,6 +293,98 @@ app.put("/api/store", requireAuth, (req, res) => {
   res.json({ ok: true })
 })
 
+// ─── Parser CSV Square ───────────────────────────────────────────────────────
+
+function parseSquareCsv(buffer) {
+  // Gérer BOM UTF-8 et encodage
+  let text = buffer.toString("utf8")
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1) // Enlever BOM
+
+  const lines = text.split(/\r?\n/).filter(l => l.trim())
+  if (lines.length < 2) return []
+
+  // Parser une ligne CSV (gère les guillemets)
+  function parseLine(line) {
+    const cols = []
+    let cur = "", inQ = false
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i]
+      if (c === '"') { inQ = !inQ }
+      else if (c === ',' && !inQ) { cols.push(cur.trim()); cur = "" }
+      else { cur += c }
+    }
+    cols.push(cur.trim())
+    return cols
+  }
+
+  const headers = parseLine(lines[0]).map(h => h.replace(/^"|"$/g, "").toLowerCase().trim())
+
+  // Colonnes Square connues (EN et FR)
+  const colDate = headers.findIndex(h => h === "date" || h === "date" )
+  const colAmount = headers.findIndex(h => h === "amount" || h === "montant" || h === "gross sales" || h === "ventes brutes")
+  const colNet = headers.findIndex(h => h === "net" || h === "net total" || h === "net sales" || h === "ventes nettes")
+  const colFee = headers.findIndex(h => h === "fee" || h === "frais" || h === "fees")
+  const colEvent = headers.findIndex(h => h === "event type" || h === "type d'événement" || h === "transaction type")
+
+  if (colDate === -1 || colAmount === -1) return []
+
+  const byMonth = {}
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseLine(lines[i])
+    if (cols.length < 2) continue
+
+    // Ignorer les remboursements et annulations
+    const eventType = colEvent >= 0 ? (cols[colEvent] ?? "").toLowerCase() : ""
+    if (eventType.includes("refund") || eventType.includes("remboursement") || eventType.includes("void")) continue
+
+    const dateRaw = (cols[colDate] ?? "").replace(/^"|"$/g, "").trim()
+    if (!dateRaw) continue
+
+    // Détecter le format de date : MM/DD/YYYY, DD/MM/YYYY, YYYY-MM-DD
+    let month = null
+    const isoMatch = dateRaw.match(/^(\d{4})-(\d{2})-\d{2}/)
+    const slashMatch = dateRaw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+    if (isoMatch) {
+      month = `${isoMatch[1]}-${isoMatch[2]}`
+    } else if (slashMatch) {
+      // Square US = MM/DD/YYYY, Square FR peut être DD/MM/YYYY
+      // On suppose MM/DD/YYYY (format Square par défaut)
+      const m = slashMatch[1].padStart(2, "0")
+      const y = slashMatch[3]
+      month = `${y}-${m}`
+    }
+    if (!month) continue
+
+    const amountRaw = (cols[colAmount] ?? "").replace(/[^0-9.,-]/g, "").replace(",", ".")
+    const amount = parseFloat(amountRaw) || 0
+    if (amount <= 0) continue // Ignorer les lignes à 0 ou négatives
+
+    let net = amount
+    if (colNet >= 0 && cols[colNet]) {
+      const netRaw = (cols[colNet] ?? "").replace(/[^0-9.,-]/g, "").replace(",", ".")
+      net = parseFloat(netRaw) || amount
+    } else if (colFee >= 0 && cols[colFee]) {
+      const feeRaw = (cols[colFee] ?? "").replace(/[^0-9.,-]/g, "").replace(",", ".")
+      const fee = parseFloat(feeRaw) || 0
+      net = amount - fee
+    }
+
+    if (!byMonth[month]) byMonth[month] = { month, cabrut: 0, canet: 0, transactions: 0 }
+    byMonth[month].cabrut += amount
+    byMonth[month].canet += net
+    byMonth[month].transactions += 1
+  }
+
+  return Object.values(byMonth)
+    .map(m => ({
+      ...m,
+      cabrut: Math.round(m.cabrut * 100) / 100,
+      canet: Math.round(m.canet * 100) / 100,
+    }))
+    .sort((a, b) => a.month.localeCompare(b.month))
+}
+
 // ─── POST /api/square/parse-report (protégé) ─────────────────────────────────
 
 const SQUARE_REPORT_PROMPT = `Tu es un assistant comptable expert en analyse de rapports de ventes Square (caisse enregistreuse).
@@ -344,12 +436,18 @@ app.post("/api/square/parse-report", requireAuth, upload.single("file"), async (
       mimetype = "image/jpeg"
     }
 
-    // CSV : envoi en texte brut
+    // CSV : parser directement sans IA
+    if (ext === "csv" || mimetype === "text/csv" || mimetype === "text/plain" || mimetype === "application/octet-stream" && ext === "csv") {
+      const months = parseSquareCsv(buffer)
+      if (months.length === 0) {
+        return res.status(422).json({ ok: false, error: "Aucune transaction détectée dans le CSV. Vérifiez que c'est bien un export Square (Transactions)." })
+      }
+      console.log(`[square-report] CSV parsé : ${months.length} mois`)
+      return res.json({ ok: true, months, periode: null })
+    }
+
     let contentBlock
-    if (ext === "csv" || mimetype === "text/csv" || mimetype === "text/plain") {
-      const csvText = buffer.toString("utf8")
-      contentBlock = { type: "text", text: `Voici le contenu du rapport CSV Square :\n\n${csvText}` }
-    } else if (mimetype === "application/pdf") {
+    if (mimetype === "application/pdf") {
       contentBlock = {
         type: "document",
         source: { type: "base64", media_type: "application/pdf", data: buffer.toString("base64") },
