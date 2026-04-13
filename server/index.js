@@ -293,6 +293,107 @@ app.put("/api/store", requireAuth, (req, res) => {
   res.json({ ok: true })
 })
 
+// ─── POST /api/square/parse-report (protégé) ─────────────────────────────────
+
+const SQUARE_REPORT_PROMPT = `Tu es un assistant comptable expert en analyse de rapports de ventes Square (caisse enregistreuse).
+Analyse ce document (rapport PDF, export CSV, capture d'écran Square Dashboard) et extrais les données de CA par mois.
+Réponds UNIQUEMENT avec un objet JSON valide, sans texte avant ni après.
+
+Format de réponse :
+{
+  "months": [
+    {
+      "month": "2026-03",
+      "cabrut": 15234.50,
+      "canet": 13849.55,
+      "transactions": 456,
+      "notes": "info utile si trouvée"
+    }
+  ],
+  "periode": "description de la période couverte si lisible"
+}
+
+Règles importantes :
+- month TOUJOURS au format YYYY-MM (ex: 2026-03 pour mars 2026)
+- cabrut = CA total TTC encaissé (montant brut des ventes, avant frais)
+- canet = CA net HT (si disponible) ou CA après déduction des frais Square. Si non précisé, mets la même valeur que cabrut
+- transactions = nombre de transactions/ventes (0 si non précisé)
+- Si le rapport couvre plusieurs mois, crée une entrée par mois
+- Si le rapport couvre une seule période, crée une entrée pour ce mois-là
+- Convertis les virgules en points pour les décimaux
+- Ignore les remboursements/refunds sauf si le rapport en donne un net déjà calculé`
+
+app.post("/api/square/parse-report", requireAuth, upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ ok: false, error: "Aucun fichier reçu" })
+
+  let { mimetype, buffer } = req.file
+  const { originalname } = req.file
+  const ext = (originalname.split(".").pop() ?? "").toLowerCase()
+
+  console.log(`[square-report] fichier reçu : ${originalname} | mime: ${mimetype} | ext: ${ext}`)
+
+  try {
+    // Convertir HEIC en JPEG
+    const isHeic = ext === "heic" || ext === "heif" || mimetype === "image/heic" || mimetype === "image/heif"
+    if (isHeic) {
+      const converted = await heicConvert({ buffer, format: "JPEG", quality: 0.92 })
+      buffer = Buffer.from(converted)
+      mimetype = "image/jpeg"
+    } else if (CONVERT_TO_JPEG_EXTS.has(ext) || mimetype === "image/avif" || mimetype === "image/tiff" || mimetype === "image/bmp") {
+      buffer = await sharp(buffer).jpeg({ quality: 92 }).toBuffer()
+      mimetype = "image/jpeg"
+    }
+
+    // CSV : envoi en texte brut
+    let contentBlock
+    if (ext === "csv" || mimetype === "text/csv" || mimetype === "text/plain") {
+      const csvText = buffer.toString("utf8")
+      contentBlock = { type: "text", text: `Voici le contenu du rapport CSV Square :\n\n${csvText}` }
+    } else if (mimetype === "application/pdf") {
+      contentBlock = {
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: buffer.toString("base64") },
+      }
+    } else if (CLAUDE_SUPPORTED_IMAGES.has(mimetype)) {
+      contentBlock = {
+        type: "image",
+        source: { type: "base64", media_type: "image/jpeg", data: buffer.toString("base64") },
+      }
+    } else {
+      return res.status(415).json({
+        ok: false,
+        error: `Format "${ext}" non reconnu. Envoyez un PDF, une image ou un export CSV Square.`,
+      })
+    }
+
+    const message = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 2048,
+      messages: [
+        {
+          role: "user",
+          content: [contentBlock, { type: "text", text: SQUARE_REPORT_PROMPT }],
+        },
+      ],
+    })
+
+    const raw = message.content[0]?.text ?? ""
+    const match = raw.match(/\{[\s\S]*\}/)
+    if (!match) throw new Error("Réponse IA invalide")
+
+    const parsed = JSON.parse(match[0])
+    if (!Array.isArray(parsed.months) || parsed.months.length === 0) {
+      throw new Error("Aucun mois détecté dans le document")
+    }
+
+    console.log(`[square-report] ${parsed.months.length} mois détectés`)
+    res.json({ ok: true, months: parsed.months, periode: parsed.periode ?? null })
+  } catch (err) {
+    console.error("[square-report] ERREUR:", err.message)
+    res.status(500).json({ ok: false, error: err.message ?? "Erreur analyse IA" })
+  }
+})
+
 // ─── GET /api/health ──────────────────────────────────────────────────────────
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }))

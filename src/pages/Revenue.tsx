@@ -1,5 +1,5 @@
-import { useState, useMemo } from "react"
-import { Pencil, Trash2, ChevronDown, ChevronRight, Info, RefreshCw } from "lucide-react"
+import { useState, useMemo, useRef } from "react"
+import { Pencil, Trash2, ChevronDown, ChevronRight, Info, RefreshCw, Upload, CheckCircle2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -34,6 +34,16 @@ export function Revenue() {
   const [expandedMonth, setExpandedMonth] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [syncMsg, setSyncMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  // Square report upload
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [parsing, setParsing] = useState(false)
+  const [parseMsg, setParseMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [reportPreview, setReportPreview] = useState<{
+    months: { month: string; cabrut: number; canet: number; transactions: number; notes?: string }[]
+    periode: string | null
+  } | null>(null)
+  const [reportOpen, setReportOpen] = useState(false)
 
   // Mois verrouillés = déjà synchronisés et terminés (passés)
   const LOCK_KEY = "facturo-square-locked-months"
@@ -84,6 +94,49 @@ export function Revenue() {
       setSyncing(false)
     }
   }
+  const handleReportUpload = async (file: File) => {
+    setParsing(true)
+    setParseMsg(null)
+    setReportPreview(null)
+    try {
+      const formData = new FormData()
+      formData.append("file", file)
+      const res = await fetch(`${API_BASE}/api/square/parse-report`, {
+        method: "POST",
+        headers: authHeader(),
+        body: formData,
+      })
+      const data = await res.json()
+      if (!data.ok) throw new Error(data.error ?? "Erreur inconnue")
+      setReportPreview({ months: data.months, periode: data.periode })
+      setReportOpen(true)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Erreur de connexion au serveur"
+      setParseMsg({ ok: false, text: msg })
+    } finally {
+      setParsing(false)
+      if (fileInputRef.current) fileInputRef.current.value = ""
+    }
+  }
+
+  const handleReportConfirm = () => {
+    if (!reportPreview) return
+    for (const m of reportPreview.months) {
+      const tvaCollectee = Math.round((m.cabrut - (m.canet ?? m.cabrut)) * 100) / 100
+      setMonthRevenue({
+        month: m.month,
+        cabrut: m.cabrut,
+        canet: m.canet ?? m.cabrut,
+        tvaCollectee: tvaCollectee > 0 ? tvaCollectee : Math.round(m.cabrut * 0.1 * 100) / 100,
+        tvaRate: 10,
+        notes: m.notes ? `Récap Square · ${m.notes}` : "Importé depuis récap Square",
+      })
+    }
+    setReportOpen(false)
+    setReportPreview(null)
+    setParseMsg({ ok: true, text: `${reportPreview.months.length} mois importé${reportPreview.months.length > 1 ? "s" : ""} depuis le récap Square` })
+  }
+
   const [form, setForm] = useState({
     cabrut: "",
     canet: "",
@@ -151,7 +204,7 @@ export function Revenue() {
     <div className="space-y-6">
       {/* Year selector + Square sync */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <Button
             variant="outline"
             size="sm"
@@ -162,9 +215,34 @@ export function Revenue() {
             <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
             {syncing ? "Synchronisation…" : "Sync Square"}
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={parsing}
+            className="gap-2"
+          >
+            <Upload className={`h-4 w-4 ${parsing ? "animate-pulse" : ""}`} />
+            {parsing ? "Analyse en cours…" : "Analyser récap Square"}
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,.csv"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (file) handleReportUpload(file)
+            }}
+          />
           {syncMsg && (
             <p className={`text-xs ${syncMsg.ok ? "text-emerald-600" : "text-red-500"}`}>
               {syncMsg.ok ? "✓ " : "✗ "}{syncMsg.text}
+            </p>
+          )}
+          {parseMsg && (
+            <p className={`text-xs ${parseMsg.ok ? "text-emerald-600" : "text-red-500"}`}>
+              {parseMsg.ok ? "✓ " : "✗ "}{parseMsg.text}
             </p>
           )}
         </div>
@@ -325,6 +403,48 @@ export function Revenue() {
           Les acomptes réels sont dus en mars, juin, sept. et déc.
         </p>
       </div>
+
+      {/* Square Report Preview Dialog */}
+      <Dialog open={reportOpen} onOpenChange={setReportOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+              Récap Square analysé
+            </DialogTitle>
+          </DialogHeader>
+          {reportPreview && (
+            <div className="space-y-4">
+              {reportPreview.periode && (
+                <p className="text-xs text-muted-foreground">Période détectée : {reportPreview.periode}</p>
+              )}
+              <div className="rounded-lg border overflow-hidden">
+                <div className="grid grid-cols-3 bg-muted/40 px-4 py-2 text-xs font-medium text-muted-foreground">
+                  <span>Mois</span>
+                  <span className="text-right">CA Brut TTC</span>
+                  <span className="text-right">CA Net HT</span>
+                </div>
+                {reportPreview.months.map((m) => (
+                  <div key={m.month} className="grid grid-cols-3 px-4 py-3 border-t text-sm">
+                    <span className="font-medium">{ymToLabel(m.month)}</span>
+                    <span className="text-right text-emerald-700 font-semibold">{formatCurrency(m.cabrut)}</span>
+                    <span className="text-right text-emerald-600">{formatCurrency(m.canet ?? m.cabrut)}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Ces données vont être enregistrées dans la page Revenus. Vous pourrez les modifier manuellement ensuite.
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReportOpen(false)}>Annuler</Button>
+            <Button onClick={handleReportConfirm}>
+              Importer {reportPreview?.months.length ?? 0} mois
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Form Dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
