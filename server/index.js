@@ -295,80 +295,114 @@ app.put("/api/store", requireAuth, (req, res) => {
 
 // ─── Parser CSV Square ───────────────────────────────────────────────────────
 
+function parseCsvLine(line) {
+  const cols = []
+  let cur = "", inQ = false
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]
+    if (c === '"') { inQ = !inQ }
+    else if ((c === ',' || c === ';') && !inQ) { cols.push(cur.trim()); cur = "" }
+    else { cur += c }
+  }
+  cols.push(cur.trim())
+  return cols.map(c => c.replace(/^"|"$/g, "").trim())
+}
+
+function parseNum(str) {
+  if (!str) return 0
+  return parseFloat(str.replace(/[^0-9.,-]/g, "").replace(",", ".")) || 0
+}
+
+function detectMonth(text) {
+  const MONTHS_FR = ["janvier","février","fevrier","mars","avril","mai","juin","juillet","août","aout","septembre","octobre","novembre","décembre","decembre"]
+  const lower = text.toLowerCase()
+  const isoMatch = lower.match(/(\d{4})-(\d{2})-\d{2}/)
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}`
+  // DD/MM/YYYY ou MM/DD/YYYY — Square FR utilise DD/MM/YYYY
+  const frMatch = lower.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+  if (frMatch) return `${frMatch[3]}-${frMatch[2].padStart(2, "0")}`
+  // Mois en lettres + année
+  for (let i = 0; i < MONTHS_FR.length; i++) {
+    if (lower.includes(MONTHS_FR[i])) {
+      const yearMatch = lower.match(/(\d{4})/)
+      if (yearMatch) return `${yearMatch[1]}-${String(i < 2 ? i + 1 : i === 2 ? 3 : i === 3 ? 4 : i + 1).padStart(2, "0")}`
+    }
+  }
+  return null
+}
+
 function parseSquareCsv(buffer) {
-  // Gérer BOM UTF-8 et encodage
   let text = buffer.toString("utf8")
-  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1) // Enlever BOM
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1)
 
   const lines = text.split(/\r?\n/).filter(l => l.trim())
   if (lines.length < 2) return []
 
-  // Parser une ligne CSV (gère les guillemets)
-  function parseLine(line) {
-    const cols = []
-    let cur = "", inQ = false
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i]
-      if (c === '"') { inQ = !inQ }
-      else if (c === ',' && !inQ) { cols.push(cur.trim()); cur = "" }
-      else { cur += c }
+  const firstLine = lines[0].toLowerCase()
+
+  // ── Format Récapitulatif (lignes = métriques, colonnes = valeurs) ─────────
+  if (firstLine.includes("récapitulatif") || firstLine.includes("recapitulatif") || firstLine.includes("summary")) {
+    let detectedMonth = null
+    // Chercher le mois dans les 5 premières lignes
+    for (let i = 0; i < Math.min(5, lines.length); i++) {
+      detectedMonth = detectMonth(lines[i])
+      if (detectedMonth) break
     }
-    cols.push(cur.trim())
-    return cols
+
+    let cabrut = null, canet = null, transactions = 0
+
+    for (const line of lines) {
+      const cols = parseCsvLine(line)
+      if (cols.length < 2) continue
+      const key = cols[0].toLowerCase().trim()
+      // Sommer toutes les colonnes numériques de la ligne (exports multi-jours)
+      const total = cols.slice(1)
+        .map(c => parseNum(c))
+        .reduce((a, b) => a + b, 0)
+
+      if (key === "ventes brutes" || key === "gross sales") cabrut = total
+      else if (key === "ventes nettes" || key === "net sales") canet = total
+      else if ((key === "total des ventes" || key === "total sales") && cabrut === null) cabrut = total
+      else if (key === "nombre total de ventes" || key === "transactions de vente" || key === "total transactions" || key === "total des transactions de vente") transactions = Math.round(total)
+    }
+
+    if (cabrut === null && canet === null) return []
+
+    return [{
+      month: detectedMonth, // null si non détecté → frontend demandera le mois
+      cabrut: Math.round((cabrut ?? canet ?? 0) * 100) / 100,
+      canet: Math.round((canet ?? cabrut ?? 0) * 100) / 100,
+      transactions,
+    }]
   }
 
-  const headers = parseLine(lines[0]).map(h => h.replace(/^"|"$/g, "").toLowerCase().trim())
+  // ── Format Transactions (une ligne par transaction) ───────────────────────
+  const headers = parseCsvLine(lines[0]).map(h => h.toLowerCase())
 
-  // Colonnes Square connues (EN et FR)
-  const colDate = headers.findIndex(h => h === "date" || h === "date" )
-  const colAmount = headers.findIndex(h => h === "amount" || h === "montant" || h === "gross sales" || h === "ventes brutes")
-  const colNet = headers.findIndex(h => h === "net" || h === "net total" || h === "net sales" || h === "ventes nettes")
-  const colFee = headers.findIndex(h => h === "fee" || h === "frais" || h === "fees")
-  const colEvent = headers.findIndex(h => h === "event type" || h === "type d'événement" || h === "transaction type")
+  const colDate = headers.findIndex(h => h === "date")
+  const colAmount = headers.findIndex(h => ["amount", "montant", "gross sales", "ventes brutes"].includes(h))
+  const colNet = headers.findIndex(h => ["net", "net total", "net sales", "ventes nettes"].includes(h))
+  const colFee = headers.findIndex(h => ["fee", "frais", "fees"].includes(h))
+  const colEvent = headers.findIndex(h => ["event type", "type d'événement", "transaction type"].includes(h))
 
   if (colDate === -1 || colAmount === -1) return []
 
   const byMonth = {}
-
   for (let i = 1; i < lines.length; i++) {
-    const cols = parseLine(lines[i])
+    const cols = parseCsvLine(lines[i])
     if (cols.length < 2) continue
-
-    // Ignorer les remboursements et annulations
-    const eventType = colEvent >= 0 ? (cols[colEvent] ?? "").toLowerCase() : ""
+    const eventType = colEvent >= 0 ? cols[colEvent].toLowerCase() : ""
     if (eventType.includes("refund") || eventType.includes("remboursement") || eventType.includes("void")) continue
 
-    const dateRaw = (cols[colDate] ?? "").replace(/^"|"$/g, "").trim()
-    if (!dateRaw) continue
-
-    // Détecter le format de date : MM/DD/YYYY, DD/MM/YYYY, YYYY-MM-DD
-    let month = null
-    const isoMatch = dateRaw.match(/^(\d{4})-(\d{2})-\d{2}/)
-    const slashMatch = dateRaw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/)
-    if (isoMatch) {
-      month = `${isoMatch[1]}-${isoMatch[2]}`
-    } else if (slashMatch) {
-      // Square US = MM/DD/YYYY, Square FR peut être DD/MM/YYYY
-      // On suppose MM/DD/YYYY (format Square par défaut)
-      const m = slashMatch[1].padStart(2, "0")
-      const y = slashMatch[3]
-      month = `${y}-${m}`
-    }
+    const month = detectMonth(cols[colDate] ?? "")
     if (!month) continue
 
-    const amountRaw = (cols[colAmount] ?? "").replace(/[^0-9.,-]/g, "").replace(",", ".")
-    const amount = parseFloat(amountRaw) || 0
-    if (amount <= 0) continue // Ignorer les lignes à 0 ou négatives
+    const amount = parseNum(cols[colAmount])
+    if (amount <= 0) continue
 
     let net = amount
-    if (colNet >= 0 && cols[colNet]) {
-      const netRaw = (cols[colNet] ?? "").replace(/[^0-9.,-]/g, "").replace(",", ".")
-      net = parseFloat(netRaw) || amount
-    } else if (colFee >= 0 && cols[colFee]) {
-      const feeRaw = (cols[colFee] ?? "").replace(/[^0-9.,-]/g, "").replace(",", ".")
-      const fee = parseFloat(feeRaw) || 0
-      net = amount - fee
-    }
+    if (colNet >= 0 && cols[colNet]) net = parseNum(cols[colNet]) || amount
+    else if (colFee >= 0 && cols[colFee]) net = amount - (parseNum(cols[colFee]) || 0)
 
     if (!byMonth[month]) byMonth[month] = { month, cabrut: 0, canet: 0, transactions: 0 }
     byMonth[month].cabrut += amount
@@ -377,11 +411,7 @@ function parseSquareCsv(buffer) {
   }
 
   return Object.values(byMonth)
-    .map(m => ({
-      ...m,
-      cabrut: Math.round(m.cabrut * 100) / 100,
-      canet: Math.round(m.canet * 100) / 100,
-    }))
+    .map(m => ({ ...m, cabrut: Math.round(m.cabrut * 100) / 100, canet: Math.round(m.canet * 100) / 100 }))
     .sort((a, b) => a.month.localeCompare(b.month))
 }
 

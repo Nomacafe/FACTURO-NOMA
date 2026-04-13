@@ -40,10 +40,11 @@ export function Revenue() {
   const [parsing, setParsing] = useState(false)
   const [parseMsg, setParseMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [reportPreview, setReportPreview] = useState<{
-    months: { month: string; cabrut: number; canet: number; transactions: number; notes?: string }[]
+    months: { month: string | null; cabrut: number; canet: number; transactions: number; notes?: string }[]
     periode: string | null
   } | null>(null)
   const [reportOpen, setReportOpen] = useState(false)
+  const [reportMonthOverride, setReportMonthOverride] = useState<string>("")
 
   // Mois verrouillés = déjà synchronisés et terminés (passés)
   const LOCK_KEY = "facturo-square-locked-months"
@@ -109,6 +110,11 @@ export function Revenue() {
       const data = await res.json()
       if (!data.ok) throw new Error(data.error ?? "Erreur inconnue")
       setReportPreview({ months: data.months, periode: data.periode })
+      // Si le mois n'est pas détecté, pré-remplir avec le mois courant
+      if (data.months.some((m: { month: string | null }) => !m.month)) {
+        const now = new Date()
+        setReportMonthOverride(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`)
+      }
       setReportOpen(true)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Erreur de connexion au serveur"
@@ -122,9 +128,11 @@ export function Revenue() {
   const handleReportConfirm = () => {
     if (!reportPreview) return
     for (const m of reportPreview.months) {
+      const resolvedMonth = m.month ?? reportMonthOverride
+      if (!resolvedMonth) continue
       const tvaCollectee = Math.round((m.cabrut - (m.canet ?? m.cabrut)) * 100) / 100
       setMonthRevenue({
-        month: m.month,
+        month: resolvedMonth,
         cabrut: m.cabrut,
         canet: m.canet ?? m.cabrut,
         tvaCollectee: tvaCollectee > 0 ? tvaCollectee : Math.round(m.cabrut * 0.1 * 100) / 100,
@@ -418,19 +426,34 @@ export function Revenue() {
               {reportPreview.periode && (
                 <p className="text-xs text-muted-foreground">Période détectée : {reportPreview.periode}</p>
               )}
+              {/* Sélecteur de mois si non détecté automatiquement */}
+              {reportPreview.months.some(m => !m.month) && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+                  <p className="text-xs text-amber-800 font-medium">Le mois n'a pas été détecté automatiquement. Sélectionnez-le :</p>
+                  <Input
+                    type="month"
+                    value={reportMonthOverride}
+                    onChange={(e) => setReportMonthOverride(e.target.value)}
+                    className="w-40"
+                  />
+                </div>
+              )}
               <div className="rounded-lg border overflow-hidden">
                 <div className="grid grid-cols-3 bg-muted/40 px-4 py-2 text-xs font-medium text-muted-foreground">
                   <span>Mois</span>
-                  <span className="text-right">CA Brut TTC</span>
-                  <span className="text-right">CA Net HT</span>
+                  <span className="text-right">CA Brut</span>
+                  <span className="text-right">CA Net</span>
                 </div>
-                {reportPreview.months.map((m) => (
-                  <div key={m.month} className="grid grid-cols-3 px-4 py-3 border-t text-sm">
-                    <span className="font-medium">{ymToLabel(m.month)}</span>
-                    <span className="text-right text-emerald-700 font-semibold">{formatCurrency(m.cabrut)}</span>
-                    <span className="text-right text-emerald-600">{formatCurrency(m.canet ?? m.cabrut)}</span>
-                  </div>
-                ))}
+                {reportPreview.months.map((m, i) => {
+                  const displayMonth = m.month ?? reportMonthOverride
+                  return (
+                    <div key={i} className="grid grid-cols-3 px-4 py-3 border-t text-sm">
+                      <span className="font-medium">{displayMonth ? ymToLabel(displayMonth) : "—"}</span>
+                      <span className="text-right text-emerald-700 font-semibold">{formatCurrency(m.cabrut)}</span>
+                      <span className="text-right text-emerald-600">{formatCurrency(m.canet ?? m.cabrut)}</span>
+                    </div>
+                  )
+                })}
               </div>
               <p className="text-xs text-muted-foreground">
                 Ces données vont être enregistrées dans la page Revenus. Vous pourrez les modifier manuellement ensuite.
@@ -439,7 +462,10 @@ export function Revenue() {
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setReportOpen(false)}>Annuler</Button>
-            <Button onClick={handleReportConfirm}>
+            <Button
+              onClick={handleReportConfirm}
+              disabled={reportPreview?.months.some(m => !m.month && !reportMonthOverride)}
+            >
               Importer {reportPreview?.months.length ?? 0} mois
             </Button>
           </DialogFooter>
