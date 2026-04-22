@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useAuthStore } from "@/store/authStore"
 import { API_BASE } from "@/lib/api"
-import { pullFromServer } from "@/lib/serverSync"
+import { pullFromServer, pushToServer } from "@/lib/serverSync"
 
 export function Login() {
   const login = useAuthStore((s) => s.login)
@@ -30,7 +30,12 @@ export function Login() {
       const data = await res.json()
       if (!data.ok) throw new Error(data.error ?? "Erreur de connexion")
       login(data.token, data.username)
-      await pullFromServer()
+      const { hasServerData } = await pullFromServer()
+      // Si le serveur est vide (ex: après redéploiement Railway), on remonte
+      // les données du localStorage vers le serveur pour les autres utilisateurs
+      if (!hasServerData) {
+        await pushToServer()
+      }
       navigate("/")
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Erreur de connexion au serveur")

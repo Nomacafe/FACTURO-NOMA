@@ -27,18 +27,19 @@ export async function pushToServer() {
   }
 }
 
-export async function pullFromServer(): Promise<boolean> {
+export async function pullFromServer(): Promise<{ synced: boolean; hasServerData: boolean }> {
   try {
     const resp = await fetch(`${API_BASE}/api/store`, { headers: authHeader() })
-    if (!resp.ok) return false
+    if (!resp.ok) return { synced: false, hasServerData: false }
     const data = await resp.json()
-    // On écrase uniquement si le serveur a des données (tableau, même vide)
+    const hasServerData = Array.isArray(data.invoices) || Array.isArray(data.expenses) || Array.isArray(data.revenues)
+    // On écrase uniquement si le serveur a des données
     if (Array.isArray(data.invoices)) useInvoiceStore.setState({ invoices: data.invoices })
     if (Array.isArray(data.expenses)) useFixedExpenseStore.setState({ expenses: data.expenses })
     if (Array.isArray(data.revenues)) useRevenueStore.setState({ revenues: data.revenues })
-    return true
+    return { synced: true, hasServerData }
   } catch {
-    return false
+    return { synced: false, hasServerData: false }
   }
 }
 
