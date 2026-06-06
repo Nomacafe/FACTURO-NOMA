@@ -315,17 +315,17 @@ function parseNum(str) {
 
 function detectMonth(text) {
   const MONTHS_FR = ["janvier","février","fevrier","mars","avril","mai","juin","juillet","août","aout","septembre","octobre","novembre","décembre","decembre"]
+  // Mois FR → numéro 1-12 (janvier=1, en tenant compte des doublons avec accent)
+  const MONTHS_NUM = [1,2,2,3,4,5,6,7,8,8,9,10,11,12,12]
   const lower = text.toLowerCase()
   const isoMatch = lower.match(/(\d{4})-(\d{2})-\d{2}/)
   if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}`
-  // DD/MM/YYYY ou MM/DD/YYYY — Square FR utilise DD/MM/YYYY
   const frMatch = lower.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/)
   if (frMatch) return `${frMatch[3]}-${frMatch[2].padStart(2, "0")}`
-  // Mois en lettres + année
   for (let i = 0; i < MONTHS_FR.length; i++) {
     if (lower.includes(MONTHS_FR[i])) {
       const yearMatch = lower.match(/(\d{4})/)
-      if (yearMatch) return `${yearMatch[1]}-${String(i < 2 ? i + 1 : i === 2 ? 3 : i === 3 ? 4 : i + 1).padStart(2, "0")}`
+      if (yearMatch) return `${yearMatch[1]}-${String(MONTHS_NUM[i]).padStart(2, "0")}`
     }
   }
   return null
