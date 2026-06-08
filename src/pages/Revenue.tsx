@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef } from "react"
-import { Pencil, Trash2, ChevronDown, ChevronRight, Info, RefreshCw, Upload, CheckCircle2 } from "lucide-react"
+import { Pencil, Trash2, ChevronDown, ChevronRight, Info, Upload, CheckCircle2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -32,8 +32,6 @@ export function Revenue() {
   const [open, setOpen] = useState(false)
   const [editingMonth, setEditingMonth] = useState<string | null>(null)
   const [expandedMonth, setExpandedMonth] = useState<string | null>(null)
-  const [syncing, setSyncing] = useState(false)
-  const [syncMsg, setSyncMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   // Square report upload
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -44,61 +42,14 @@ export function Revenue() {
     periode: string | null
   } | null>(null)
   const [reportOpen, setReportOpen] = useState(false)
-  const [reportMonthOverride, setReportMonthOverride] = useState<string>("")
+  // Overrides de mois : { index → "YYYY-MM" }
+  const [monthOverrides, setMonthOverrides] = useState<Record<number, string>>({})
 
-  // Mois verrouillés = déjà synchronisés et terminés (passés)
-  const LOCK_KEY = "facturo-square-locked-months"
-  function getLockedMonths(): string[] {
-    try { return JSON.parse(localStorage.getItem(LOCK_KEY) ?? "[]") } catch { return [] }
-  }
-  function lockMonth(ym: string) {
-    const locked = getLockedMonths()
-    if (!locked.includes(ym)) localStorage.setItem(LOCK_KEY, JSON.stringify([...locked, ym]))
-  }
-  function isMonthOver(ym: string): boolean {
-    const now = new Date()
-    const currentYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
-    return ym < currentYM
-  }
-
-  const handleSquareSync = async () => {
-    setSyncing(true)
-    setSyncMsg(null)
-    try {
-      // Sync uniquement le mois en cours — les mois passés sont figés
-      const now = new Date()
-      const from = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01T00:00:00Z`
-
-      const res = await fetch(`${API_BASE}/api/square/sync?from=${from}`, { headers: authHeader() })
-      const data = await res.json()
-      if (!data.ok) throw new Error(data.error ?? "Erreur inconnue")
-
-      let updated = 0
-      for (const m of data.months) {
-        setMonthRevenue({
-          month: m.month,
-          cabrut: m.totalTTC,
-          canet: m.caNet,
-          tvaCollectee: m.tvaCollectee,
-          tvaRate: 10,
-          notes: `Sync Square · ${m.transactions} transactions`,
-        })
-        // Verrouiller automatiquement les mois terminés après leur première sync
-        if (isMonthOver(m.month)) lockMonth(m.month)
-        updated++
-      }
-      setSyncMsg({ ok: true, text: `Mois en cours mis à jour · ${data.total} transactions` })
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Erreur de connexion au serveur local (port 3001)"
-      setSyncMsg({ ok: false, text: msg })
-    } finally {
-      setSyncing(false)
-    }
-  }
   const handleReportUpload = async (file: File) => {
     setParsing(true)
     setParseMsg(null)
     setReportPreview(null)
+    setMonthOverrides({})
     try {
       const formData = new FormData()
       formData.append("file", file)
@@ -110,11 +61,14 @@ export function Revenue() {
       const data = await res.json()
       if (!data.ok) throw new Error(data.error ?? "Erreur inconnue")
       setReportPreview({ months: data.months, periode: data.periode })
-      // Si le mois n'est pas détecté, pré-remplir avec le mois courant
-      if (data.months.some((m: { month: string | null }) => !m.month)) {
-        const now = new Date()
-        setReportMonthOverride(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`)
-      }
+      // Pré-remplir les overrides avec les mois détectés (ou mois courant si absent)
+      const now = new Date()
+      const currentYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+      const overrides: Record<number, string> = {}
+      data.months.forEach((m: { month: string | null }, i: number) => {
+        overrides[i] = m.month ?? currentYM
+      })
+      setMonthOverrides(overrides)
       setReportOpen(true)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Erreur de connexion au serveur"
@@ -127,9 +81,10 @@ export function Revenue() {
 
   const handleReportConfirm = () => {
     if (!reportPreview) return
-    for (const m of reportPreview.months) {
-      const resolvedMonth = m.month ?? reportMonthOverride
-      if (!resolvedMonth) continue
+    let count = 0
+    reportPreview.months.forEach((m, i) => {
+      const resolvedMonth = monthOverrides[i] ?? m.month
+      if (!resolvedMonth) return
       const tvaCollectee = Math.round((m.cabrut - (m.canet ?? m.cabrut)) * 100) / 100
       setMonthRevenue({
         month: resolvedMonth,
@@ -139,10 +94,11 @@ export function Revenue() {
         tvaRate: 10,
         notes: m.notes ? `Récap Square · ${m.notes}` : "Importé depuis récap Square",
       })
-    }
+      count++
+    })
     setReportOpen(false)
     setReportPreview(null)
-    setParseMsg({ ok: true, text: `${reportPreview.months.length} mois importé${reportPreview.months.length > 1 ? "s" : ""} depuis le récap Square` })
+    setParseMsg({ ok: true, text: `${count} mois importé${count > 1 ? "s" : ""} depuis le récap Square` })
   }
 
   const [form, setForm] = useState({
@@ -210,19 +166,9 @@ export function Revenue() {
 
   return (
     <div className="space-y-6">
-      {/* Year selector + Square sync */}
+      {/* Year selector + Square upload */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3 flex-wrap">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleSquareSync}
-            disabled={syncing}
-            className="gap-2"
-          >
-            <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
-            {syncing ? "Synchronisation…" : "Sync Square"}
-          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -231,7 +177,7 @@ export function Revenue() {
             className="gap-2"
           >
             <Upload className={`h-4 w-4 ${parsing ? "animate-pulse" : ""}`} />
-            {parsing ? "Analyse en cours…" : "Analyser récap Square"}
+            {parsing ? "Analyse en cours…" : "Importer récap Square"}
           </Button>
           <input
             ref={fileInputRef}
@@ -243,11 +189,6 @@ export function Revenue() {
               if (file) handleReportUpload(file)
             }}
           />
-          {syncMsg && (
-            <p className={`text-xs ${syncMsg.ok ? "text-emerald-600" : "text-red-500"}`}>
-              {syncMsg.ok ? "✓ " : "✗ "}{syncMsg.text}
-            </p>
-          )}
           {parseMsg && (
             <p className={`text-xs ${parseMsg.ok ? "text-emerald-600" : "text-red-500"}`}>
               {parseMsg.ok ? "✓ " : "✗ "}{parseMsg.text}
@@ -418,7 +359,7 @@ export function Revenue() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <CheckCircle2 className="h-5 w-5 text-emerald-600" />
-              Récap Square analysé
+              Récap Square — vérifier avant import
             </DialogTitle>
           </DialogHeader>
           {reportPreview && (
@@ -426,37 +367,27 @@ export function Revenue() {
               {reportPreview.periode && (
                 <p className="text-xs text-muted-foreground">Période détectée : {reportPreview.periode}</p>
               )}
-              {/* Sélecteur de mois si non détecté automatiquement */}
-              {reportPreview.months.some(m => !m.month) && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
-                  <p className="text-xs text-amber-800 font-medium">Le mois n'a pas été détecté automatiquement. Sélectionnez-le :</p>
-                  <Input
-                    type="month"
-                    value={reportMonthOverride}
-                    onChange={(e) => setReportMonthOverride(e.target.value)}
-                    className="w-40"
-                  />
-                </div>
-              )}
               <div className="rounded-lg border overflow-hidden">
-                <div className="grid grid-cols-3 bg-muted/40 px-4 py-2 text-xs font-medium text-muted-foreground">
-                  <span>Mois</span>
+                <div className="grid grid-cols-4 bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground">
+                  <span className="col-span-2">Mois (modifiable)</span>
                   <span className="text-right">CA Brut</span>
                   <span className="text-right">CA Net</span>
                 </div>
-                {reportPreview.months.map((m, i) => {
-                  const displayMonth = m.month ?? reportMonthOverride
-                  return (
-                    <div key={i} className="grid grid-cols-3 px-4 py-3 border-t text-sm">
-                      <span className="font-medium">{displayMonth ? ymToLabel(displayMonth) : "—"}</span>
-                      <span className="text-right text-emerald-700 font-semibold">{formatCurrency(m.cabrut)}</span>
-                      <span className="text-right text-emerald-600">{formatCurrency(m.canet ?? m.cabrut)}</span>
-                    </div>
-                  )
-                })}
+                {reportPreview.months.map((m, i) => (
+                  <div key={i} className="grid grid-cols-4 px-3 py-2 border-t text-sm items-center gap-2">
+                    <Input
+                      type="month"
+                      value={monthOverrides[i] ?? ""}
+                      onChange={(e) => setMonthOverrides(prev => ({ ...prev, [i]: e.target.value }))}
+                      className="col-span-2 h-8 text-xs"
+                    />
+                    <span className="text-right text-emerald-700 font-semibold">{formatCurrency(m.cabrut)}</span>
+                    <span className="text-right text-emerald-600">{formatCurrency(m.canet ?? m.cabrut)}</span>
+                  </div>
+                ))}
               </div>
               <p className="text-xs text-muted-foreground">
-                Ces données vont être enregistrées dans la page Revenus. Vous pourrez les modifier manuellement ensuite.
+                Modifiez le mois si besoin, puis cliquez sur Importer.
               </p>
             </div>
           )}
@@ -464,7 +395,7 @@ export function Revenue() {
             <Button variant="outline" onClick={() => setReportOpen(false)}>Annuler</Button>
             <Button
               onClick={handleReportConfirm}
-              disabled={reportPreview?.months.some(m => !m.month && !reportMonthOverride)}
+              disabled={reportPreview?.months.some((_, i) => !monthOverrides[i])}
             >
               Importer {reportPreview?.months.length ?? 0} mois
             </Button>

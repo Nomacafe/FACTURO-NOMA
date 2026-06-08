@@ -16,9 +16,6 @@ import Anthropic from "@anthropic-ai/sdk"
 import sharp from "sharp"
 const heicConvertPkg = require("heic-convert")
 const heicConvert = heicConvertPkg.default ?? heicConvertPkg
-import squarePkg from "square"
-
-const { SquareClient, SquareEnvironment } = squarePkg
 
 const app = express()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } })
@@ -27,12 +24,6 @@ const isProd = process.env.NODE_ENV === "production"
 app.use(cors({ origin: isProd ? false : "http://localhost:5173" }))
 app.use(express.json())
 
-const square = new SquareClient({
-  token: process.env.SQUARE_ACCESS_TOKEN,
-  environment: SquareEnvironment.Production,
-})
-
-const LOCATION_ID = process.env.SQUARE_LOCATION_ID
 const JWT_SECRET = process.env.JWT_SECRET ?? "facturo-secret"
 const JWT_EXPIRY = "7d"
 
@@ -183,82 +174,6 @@ app.post("/api/invoice/parse", requireAuth, upload.single("file"), async (req, r
   } catch (err) {
     console.error("[parse] ERREUR:", err.message, err.stack?.split("\n")[1])
     res.status(500).json({ ok: false, error: err.message ?? "Erreur analyse IA" })
-  }
-})
-
-// ─── Helper : agrège les commandes par mois ──────────────────────────────────
-
-function groupByMonth(orders) {
-  const map = {}
-
-  for (const o of orders) {
-    if (!o.createdAt) continue
-    if (o.state !== "COMPLETED") continue
-
-    const month = new Date(o.createdAt).toISOString().slice(0, 7)
-    if (!map[month]) {
-      map[month] = { month, totalTTC: 0, tvaCollectee: 0, transactions: 0 }
-    }
-
-    const tenders = (o.tenders ?? []).filter(t => t.type !== "NO_SALE")
-    if (tenders.length === 0) continue
-
-    const ttc = tenders.reduce((sum, t) => sum + Number(t.amountMoney?.amount ?? 0), 0) / 100
-    if (Math.abs(ttc) < 0.01) continue
-
-    const tvaRaw = Number(o.totalTaxMoney?.amount ?? 0) / 100
-    const tva = tvaRaw > 0 ? tvaRaw : Math.round((ttc - ttc / 1.1) * 100) / 100
-
-    map[month].totalTTC += ttc
-    map[month].tvaCollectee += tva
-    if (ttc > 0) map[month].transactions += 1
-  }
-
-  return Object.values(map)
-    .map((m) => ({
-      ...m,
-      totalTTC: Math.round(m.totalTTC * 100) / 100,
-      tvaCollectee: Math.round(m.tvaCollectee * 100) / 100,
-      caNet: Math.round((m.totalTTC - m.tvaCollectee) * 100) / 100,
-    }))
-    .sort((a, b) => a.month.localeCompare(b.month))
-}
-
-// ─── GET /api/square/sync (protégé) ──────────────────────────────────────────
-
-app.get("/api/square/sync", requireAuth, async (req, res) => {
-  try {
-    const startDate = req.query.from ?? "2025-10-01T00:00:00Z"
-    const endDate = new Date().toISOString()
-
-    let orders = []
-    let cursor = undefined
-
-    do {
-      const result = await square.orders.search({
-        locationIds: [LOCATION_ID],
-        query: {
-          filter: {
-            dateTimeFilter: { createdAt: { startAt: startDate, endAt: endDate } },
-            stateFilter: { states: ["COMPLETED"] },
-          },
-          sort: { sortField: "CREATED_AT", sortOrder: "ASC" },
-        },
-        limit: 500,
-        ...(cursor && { cursor }),
-      })
-      orders = orders.concat(result.orders ?? [])
-      cursor = result.cursor ?? null
-    } while (cursor)
-
-    console.log(`[sync] ${orders.length} commandes récupérées`)
-
-    const monthly = groupByMonth(orders)
-    console.log(`[sync] mensuel:`, monthly.map(m => `${m.month}=${m.totalTTC}`).join(", "))
-    res.json({ ok: true, months: monthly, total: orders.length })
-  } catch (err) {
-    console.error("Square API error:", err)
-    res.status(500).json({ ok: false, error: err.message ?? "Erreur Square" })
   }
 })
 
