@@ -200,13 +200,14 @@ app.get("/api/store", requireAuth, (req, res) => {
 })
 
 app.put("/api/store", requireAuth, (req, res) => {
-  const { invoices, expenses, revenues } = req.body ?? {}
+  const { invoices, expenses, revenues, virements } = req.body ?? {}
   const existing = readStore()
   writeStore({
     ...existing,
     ...(invoices !== undefined && { invoices }),
     ...(expenses !== undefined && { expenses }),
     ...(revenues !== undefined && { revenues }),
+    ...(virements !== undefined && { virements }),
   })
   res.json({ ok: true })
 })

@@ -218,3 +218,23 @@ export function computeIS(benefice: number): number {
   const normal = Math.max(0, benefice - IS_SEUIL_TAUX_REDUIT) * IS_TAUX_NORMAL
   return Math.round((reduit + normal) * 100) / 100
 }
+
+// ─── Virements (recettes hors Square) ────────────────────────────────────────
+
+export type VirementCategory = "Privatisation" | "Ticket d'entrée" | "Location coworking" | "Autre"
+
+export const VIREMENT_CATEGORIES: VirementCategory[] = [
+  "Privatisation", "Ticket d'entrée", "Location coworking", "Autre",
+]
+
+export interface Virement {
+  id: string
+  date: string           // "YYYY-MM-DD"
+  month: string          // "YYYY-MM" dérivé de date
+  category: VirementCategory
+  montantTTC: number
+  tauxTVA: TVARate
+  montantTVA: number     // calculé
+  montantHT: number      // calculé
+  notes?: string
+}

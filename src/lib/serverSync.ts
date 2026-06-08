@@ -1,6 +1,7 @@
 import { useInvoiceStore } from "@/store/invoiceStore"
 import { useFixedExpenseStore } from "@/store/fixedExpenseStore"
 import { useRevenueStore } from "@/store/revenueStore"
+import { useVirementStore } from "@/store/virementStore"
 import { API_BASE } from "@/lib/api"
 import { authHeader } from "@/store/authStore"
 
@@ -20,6 +21,7 @@ export async function pushToServer() {
         invoices: useInvoiceStore.getState().invoices,
         expenses: useFixedExpenseStore.getState().expenses,
         revenues: useRevenueStore.getState().revenues,
+        virements: useVirementStore.getState().virements,
       }),
     })
   } catch {
@@ -37,6 +39,7 @@ export async function pullFromServer(): Promise<{ synced: boolean; hasServerData
     if (Array.isArray(data.invoices)) useInvoiceStore.setState({ invoices: data.invoices })
     if (Array.isArray(data.expenses)) useFixedExpenseStore.setState({ expenses: data.expenses })
     if (Array.isArray(data.revenues)) useRevenueStore.setState({ revenues: data.revenues })
+    if (Array.isArray(data.virements)) useVirementStore.setState({ virements: data.virements })
     return { synced: true, hasServerData }
   } catch {
     return { synced: false, hasServerData: false }
@@ -47,4 +50,5 @@ export function initServerSync() {
   useInvoiceStore.subscribe(scheduleSave)
   useFixedExpenseStore.subscribe(scheduleSave)
   useRevenueStore.subscribe(scheduleSave)
+  useVirementStore.subscribe(scheduleSave)
 }

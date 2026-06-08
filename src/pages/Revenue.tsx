@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef } from "react"
-import { Pencil, Trash2, ChevronDown, ChevronRight, Info, Upload, CheckCircle2 } from "lucide-react"
+import { Pencil, Trash2, ChevronDown, ChevronRight, Info, Upload, CheckCircle2, PlusCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -12,10 +12,11 @@ import {
 import { useRevenueStore } from "@/store/revenueStore"
 import { useInvoiceStore } from "@/store/invoiceStore"
 import { useFixedExpenseStore } from "@/store/fixedExpenseStore"
+import { useVirementStore } from "@/store/virementStore"
 import { authHeader } from "@/store/authStore"
 import { API_BASE } from "@/lib/api"
-import type { TVARate } from "@/types"
-import { TVA_RATES, TVA_RATE_LABELS, computeIS } from "@/types"
+import type { TVARate, VirementCategory } from "@/types"
+import { TVA_RATES, TVA_RATE_LABELS, VIREMENT_CATEGORIES, computeIS } from "@/types"
 import { formatCurrency } from "@/lib/utils"
 import { computeMonthPL, getAllMonthsForYear, ymToLabel } from "@/lib/pl-calculator"
 
@@ -25,6 +26,7 @@ function currentYear() { return new Date().getFullYear() }
 
 export function Revenue() {
   const { revenues, setMonthRevenue, deleteMonthRevenue } = useRevenueStore()
+  const { virements, addVirement, deleteVirement } = useVirementStore()
   const invoices = useInvoiceStore((s) => s.invoices)
   const fixedExpenses = useFixedExpenseStore((s) => s.expenses)
 
@@ -44,6 +46,38 @@ export function Revenue() {
   const [reportOpen, setReportOpen] = useState(false)
   // Overrides de mois : { index → "YYYY-MM" }
   const [monthOverrides, setMonthOverrides] = useState<Record<number, string>>({})
+
+  // Modal virement
+  const [virOpen, setVirOpen] = useState(false)
+  const today = new Date().toISOString().slice(0, 10)
+  const [virForm, setVirForm] = useState({
+    date: today,
+    category: "Privatisation" as VirementCategory,
+    montantTTC: "",
+    tauxTVA: 20 as TVARate,
+    notes: "",
+  })
+  const virTTC = parseFloat(virForm.montantTTC) || 0
+  const virHT = virTTC > 0 ? Math.round((virTTC / (1 + virForm.tauxTVA / 100)) * 100) / 100 : 0
+  const virTVA = Math.round((virTTC - virHT) * 100) / 100
+
+  const handleVirSave = () => {
+    if (virTTC <= 0) return
+    const month = virForm.date.slice(0, 7)
+    addVirement({
+      id: `vir-${Date.now()}`,
+      date: virForm.date,
+      month,
+      category: virForm.category,
+      montantTTC: virTTC,
+      tauxTVA: virForm.tauxTVA,
+      montantTVA: virTVA,
+      montantHT: virHT,
+      notes: virForm.notes || undefined,
+    })
+    setVirOpen(false)
+    setVirForm({ date: today, category: "Privatisation", montantTTC: "", tauxTVA: 20, notes: "" })
+  }
 
   const handleReportUpload = async (file: File) => {
     setParsing(true)
@@ -136,14 +170,24 @@ export function Revenue() {
     setOpen(false)
   }
 
-  // Build monthly P&L rows
+  // Build monthly P&L rows — virements fusionnés dans le CA
   const rows = useMemo(() =>
     getAllMonthsForYear(parseInt(year)).map((ym) => {
       const rev = revenues.find((r) => r.month === ym)
-      const pl = computeMonthPL(ym, invoices, fixedExpenses, rev)
-      return pl
+      const monthVirements = virements.filter((v) => v.month === ym)
+      const virCA = monthVirements.reduce((s, v) => s + v.montantTTC, 0)
+      const virTVASum = monthVirements.reduce((s, v) => s + v.montantTVA, 0)
+      const mergedRev = (rev || virCA > 0) ? {
+        month: ym,
+        cabrut: (rev?.cabrut ?? 0) + virCA,
+        canet: (rev?.canet ?? rev?.cabrut ?? 0) + virCA,
+        tvaCollectee: (rev?.tvaCollectee ?? 0) + virTVASum,
+        tvaRate: rev?.tvaRate ?? 10,
+        notes: rev?.notes,
+      } : undefined
+      return computeMonthPL(ym, invoices, fixedExpenses, mergedRev)
     }),
-    [year, revenues, invoices, fixedExpenses]
+    [year, revenues, virements, invoices, fixedExpenses]
   )
 
   const currentYM = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`
@@ -169,6 +213,15 @@ export function Revenue() {
       {/* Year selector + Square upload */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3 flex-wrap">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setVirOpen(true)}
+            className="gap-2"
+          >
+            <PlusCircle className="h-4 w-4" />
+            Virement
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -304,6 +357,26 @@ export function Revenue() {
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
                     P&L détaillé — {ymToLabel(row.month)}
                   </p>
+                  {/* Virements du mois */}
+                  {virements.filter(v => v.month === row.month).length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Virements</p>
+                      <div className="space-y-1">
+                        {virements.filter(v => v.month === row.month).map(v => (
+                          <div key={v.id} className="flex items-center justify-between text-xs bg-white rounded-lg px-3 py-2 border">
+                            <span className="text-muted-foreground w-20 shrink-0">{v.date}</span>
+                            <span className="flex-1 font-medium">{v.category}{v.notes ? ` · ${v.notes}` : ""}</span>
+                            <span className="text-emerald-700 font-semibold w-20 text-right">{formatCurrency(v.montantTTC)}</span>
+                            <span className="text-muted-foreground w-16 text-right">{v.tauxTVA}% TVA</span>
+                            <button onClick={() => deleteVirement(v.id)} className="ml-3 text-red-400 hover:text-red-600">
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      <Separator className="mt-3" />
+                    </div>
+                  )}
                   <div className="space-y-1.5 text-sm max-w-md">
                     <WFRow label="CA Brut" value={row.cabrut} color="text-emerald-700" bold />
                     {row.canet !== row.cabrut && (
@@ -399,6 +472,60 @@ export function Revenue() {
             >
               Importer {reportPreview?.months.length ?? 0} mois
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Virement */}
+      <Dialog open={virOpen} onOpenChange={setVirOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Ajouter un virement</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="space-y-1.5">
+              <Label className="text-sm">Date</Label>
+              <Input type="date" value={virForm.date} onChange={(e) => setVirForm(p => ({ ...p, date: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Catégorie</Label>
+              <Select value={virForm.category} onValueChange={(v) => setVirForm(p => ({ ...p, category: v as VirementCategory }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {VIREMENT_CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Montant TTC (€)</Label>
+              <Input type="number" step="0.01" placeholder="0.00" value={virForm.montantTTC}
+                onChange={(e) => setVirForm(p => ({ ...p, montantTTC: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Taux TVA</Label>
+              <Select value={String(virForm.tauxTVA)} onValueChange={(v) => setVirForm(p => ({ ...p, tauxTVA: Number(v) as TVARate }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {TVA_RATES.map(r => <SelectItem key={r} value={String(r)}>{TVA_RATE_LABELS[r]}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            {virTTC > 0 && (
+              <div className="rounded-lg bg-muted/40 p-3 text-xs space-y-1">
+                <div className="flex justify-between"><span className="text-muted-foreground">Montant HT</span><span className="font-semibold">{formatCurrency(virHT)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">TVA ({virForm.tauxTVA}%)</span><span>{formatCurrency(virTVA)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">TTC</span><span className="font-bold text-emerald-700">{formatCurrency(virTTC)}</span></div>
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label className="text-sm">Notes <span className="text-muted-foreground font-normal">(optionnel)</span></Label>
+              <Input placeholder="Ex: Soirée entreprise XYZ…" value={virForm.notes}
+                onChange={(e) => setVirForm(p => ({ ...p, notes: e.target.value }))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setVirOpen(false)}>Annuler</Button>
+            <Button onClick={handleVirSave} disabled={virTTC <= 0}>Enregistrer</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
