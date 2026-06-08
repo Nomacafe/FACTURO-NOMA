@@ -140,14 +140,17 @@ app.post("/api/invoice/parse", requireAuth, upload.single("file"), async (req, r
       mimetype = "image/jpeg"
     }
 
-    let contentBlock
+    const IMAGE_EXTS_INV = new Set(["jpg","jpeg","png","gif","webp"])
+    const isPdfInv = ext === "pdf" || mimetype === "application/pdf"
+    const isImageInv = IMAGE_EXTS_INV.has(ext) || CLAUDE_SUPPORTED_IMAGES.has(mimetype)
 
-    if (mimetype === "application/pdf") {
+    let contentBlock
+    if (isPdfInv) {
       contentBlock = {
         type: "document",
         source: { type: "base64", media_type: "application/pdf", data: buffer.toString("base64") },
       }
-    } else if (CLAUDE_SUPPORTED_IMAGES.has(mimetype)) {
+    } else if (isImageInv) {
       contentBlock = {
         type: "image",
         source: { type: "base64", media_type: "image/jpeg", data: buffer.toString("base64") },
@@ -476,13 +479,17 @@ app.post("/api/square/parse-report", requireAuth, upload.single("file"), async (
       return res.json({ ok: true, months, periode: null })
     }
 
+    const IMAGE_EXTS = new Set(["jpg","jpeg","png","gif","webp"])
+    const isPdf = ext === "pdf" || mimetype === "application/pdf"
+    const isImage = IMAGE_EXTS.has(ext) || CLAUDE_SUPPORTED_IMAGES.has(mimetype)
+
     let contentBlock
-    if (mimetype === "application/pdf") {
+    if (isPdf) {
       contentBlock = {
         type: "document",
         source: { type: "base64", media_type: "application/pdf", data: buffer.toString("base64") },
       }
-    } else if (CLAUDE_SUPPORTED_IMAGES.has(mimetype)) {
+    } else if (isImage) {
       contentBlock = {
         type: "image",
         source: { type: "base64", media_type: "image/jpeg", data: buffer.toString("base64") },
@@ -490,7 +497,7 @@ app.post("/api/square/parse-report", requireAuth, upload.single("file"), async (
     } else {
       return res.status(415).json({
         ok: false,
-        error: `Format "${ext}" non reconnu. Envoyez un PDF, une image ou un export CSV Square.`,
+        error: `Format "${ext}" non reconnu. Envoyez un PDF, une image (JPG/PNG) ou un export CSV Square.`,
       })
     }
 
