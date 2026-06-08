@@ -26,7 +26,7 @@ function currentYear() { return new Date().getFullYear() }
 
 export function Revenue() {
   const { revenues, setMonthRevenue, deleteMonthRevenue } = useRevenueStore()
-  const { virements, addVirement, deleteVirement } = useVirementStore()
+  const { virements, addVirement, updateVirement, deleteVirement } = useVirementStore()
   const invoices = useInvoiceStore((s) => s.invoices)
   const fixedExpenses = useFixedExpenseStore((s) => s.expenses)
 
@@ -49,6 +49,7 @@ export function Revenue() {
 
   // Modal virement
   const [virOpen, setVirOpen] = useState(false)
+  const [virEditId, setVirEditId] = useState<string | null>(null)
   const today = new Date().toISOString().slice(0, 10)
   const [virForm, setVirForm] = useState({
     date: today,
@@ -61,21 +62,50 @@ export function Revenue() {
   const virHT = virTTC > 0 ? Math.round((virTTC / (1 + virForm.tauxTVA / 100)) * 100) / 100 : 0
   const virTVA = Math.round((virTTC - virHT) * 100) / 100
 
+  const openVirNew = () => {
+    setVirEditId(null)
+    setVirForm({ date: today, category: "Privatisation", montantTTC: "", tauxTVA: 20, notes: "" })
+    setVirOpen(true)
+  }
+
+  const openVirEdit = (id: string) => {
+    const v = virements.find((x) => x.id === id)
+    if (!v) return
+    setVirEditId(id)
+    setVirForm({ date: v.date, category: v.category, montantTTC: String(v.montantTTC), tauxTVA: v.tauxTVA, notes: v.notes ?? "" })
+    setVirOpen(true)
+  }
+
   const handleVirSave = () => {
     if (virTTC <= 0) return
     const month = virForm.date.slice(0, 7)
-    addVirement({
-      id: `vir-${Date.now()}`,
-      date: virForm.date,
-      month,
-      category: virForm.category,
-      montantTTC: virTTC,
-      tauxTVA: virForm.tauxTVA,
-      montantTVA: virTVA,
-      montantHT: virHT,
-      notes: virForm.notes || undefined,
-    })
+    if (virEditId) {
+      updateVirement({
+        id: virEditId,
+        date: virForm.date,
+        month,
+        category: virForm.category,
+        montantTTC: virTTC,
+        tauxTVA: virForm.tauxTVA,
+        montantTVA: virTVA,
+        montantHT: virHT,
+        notes: virForm.notes || undefined,
+      })
+    } else {
+      addVirement({
+        id: `vir-${Date.now()}`,
+        date: virForm.date,
+        month,
+        category: virForm.category,
+        montantTTC: virTTC,
+        tauxTVA: virForm.tauxTVA,
+        montantTVA: virTVA,
+        montantHT: virHT,
+        notes: virForm.notes || undefined,
+      })
+    }
     setVirOpen(false)
+    setVirEditId(null)
     setVirForm({ date: today, category: "Privatisation", montantTTC: "", tauxTVA: 20, notes: "" })
   }
 
@@ -216,7 +246,7 @@ export function Revenue() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setVirOpen(true)}
+            onClick={openVirNew}
             className="gap-2"
           >
             <PlusCircle className="h-4 w-4" />
@@ -352,52 +382,101 @@ export function Revenue() {
               </div>
 
               {/* Expanded waterfall */}
-              {isExpanded && (
-                <div className="border-t bg-muted/20 px-6 py-4">
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                    P&L détaillé — {ymToLabel(row.month)}
-                  </p>
-                  {/* Virements du mois */}
-                  {virements.filter(v => v.month === row.month).length > 0 && (
-                    <div className="mb-4">
-                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Virements</p>
-                      <div className="space-y-1">
-                        {virements.filter(v => v.month === row.month).map(v => (
-                          <div key={v.id} className="flex items-center justify-between text-xs bg-white rounded-lg px-3 py-2 border">
-                            <span className="text-muted-foreground w-20 shrink-0">{v.date}</span>
-                            <span className="flex-1 font-medium">{v.category}{v.notes ? ` · ${v.notes}` : ""}</span>
-                            <span className="text-emerald-700 font-semibold w-20 text-right">{formatCurrency(v.montantTTC)}</span>
-                            <span className="text-muted-foreground w-16 text-right">{v.tauxTVA}% TVA</span>
-                            <button onClick={() => deleteVirement(v.id)} className="ml-3 text-red-400 hover:text-red-600">
-                              <Trash2 className="h-3 w-3" />
-                            </button>
-                          </div>
-                        ))}
+              {isExpanded && (() => {
+                const rev = revenues.find(r => r.month === row.month)
+                const monthVirs = virements.filter(v => v.month === row.month)
+                return (
+                  <div className="border-t bg-muted/20 px-6 py-4 space-y-4">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                      P&L détaillé — {ymToLabel(row.month)}
+                    </p>
+
+                    {/* Bloc Récap Square */}
+                    <div className="rounded-lg border bg-white overflow-hidden">
+                      <div className="flex items-center justify-between px-3 py-2 bg-muted/30 border-b">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Récap Square</p>
+                        <Button variant="ghost" size="sm" className="h-6 text-xs px-2 gap-1" onClick={() => openForm(row.month)}>
+                          <Pencil className="h-3 w-3" />
+                          {rev ? "Modifier" : "Saisir"}
+                        </Button>
                       </div>
-                      <Separator className="mt-3" />
+                      {rev ? (
+                        <div className="flex items-center gap-4 px-3 py-2.5 text-sm flex-wrap">
+                          <span className="text-muted-foreground text-xs">CA Brut</span>
+                          <span className="font-semibold text-emerald-700">{formatCurrency(rev.cabrut)}</span>
+                          {rev.canet && rev.canet !== rev.cabrut && (
+                            <><span className="text-muted-foreground text-xs">CA Net</span>
+                            <span className="text-emerald-600">{formatCurrency(rev.canet)}</span></>
+                          )}
+                          <span className="text-muted-foreground text-xs">TVA {rev.tvaRate}%</span>
+                          {rev.notes && <span className="text-xs text-muted-foreground italic truncate max-w-xs">{rev.notes}</span>}
+                        </div>
+                      ) : (
+                        <p className="px-3 py-2.5 text-xs text-muted-foreground italic">Aucune donnée Square ce mois-ci</p>
+                      )}
                     </div>
-                  )}
-                  <div className="space-y-1.5 text-sm max-w-md">
-                    <WFRow label="CA Brut" value={row.cabrut} color="text-emerald-700" bold />
-                    {row.canet !== row.cabrut && (
-                      <WFRow label="CA Net (après remises)" value={row.canet} color="text-emerald-600" indent />
-                    )}
-                    <Separator className="my-2" />
-                    <WFRow label="Charges variables (factures)" value={-row.chargesVariablesHT} color="text-red-600" indent />
-                    <WFRow label="Charges fixes (mensuel)" value={-row.chargesFixesHT} color="text-red-600" indent />
-                    <WFRow label="Total charges HT" value={-row.totalChargesHT} color="text-red-700" bold />
-                    <Separator className="my-2" />
-                    <WFRow label="Résultat brut" value={row.resultatBrut} color={row.resultatBrut >= 0 ? "text-emerald-700" : "text-red-600"} bold />
-                    <WFRow label={`IS estimé (15%/25%)`} value={-row.isEstime} color="text-amber-600" indent />
-                    <Separator className="my-2" />
-                    <WFRow label="Résultat net disponible" value={row.resultatNet} color={row.resultatNet >= 0 ? "text-emerald-700" : "text-red-600"} bold large />
-                    <Separator className="my-2" />
-                    <WFRow label="TVA collectée" value={row.tvaCollectee} color="text-muted-foreground" indent small />
-                    <WFRow label="TVA déductible" value={-row.tvaDeductible} color="text-muted-foreground" indent small />
-                    <WFRow label="TVA nette à reverser" value={row.tvaNette} color={row.tvaNette > 0 ? "text-amber-600" : "text-emerald-600"} indent small />
+
+                    {/* Bloc Virements */}
+                    <div className="rounded-lg border bg-white overflow-hidden">
+                      <div className="flex items-center justify-between px-3 py-2 bg-muted/30 border-b">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                          Virements {monthVirs.length > 0 && <span className="text-primary">({monthVirs.length})</span>}
+                        </p>
+                        <Button variant="ghost" size="sm" className="h-6 text-xs px-2 gap-1" onClick={openVirNew}>
+                          <PlusCircle className="h-3 w-3" />
+                          Ajouter
+                        </Button>
+                      </div>
+                      {monthVirs.length > 0 ? (
+                        <div className="divide-y">
+                          {monthVirs.map(v => (
+                            <div key={v.id} className="flex items-center gap-2 px-3 py-2 text-xs">
+                              <span className="text-muted-foreground w-20 shrink-0">{v.date}</span>
+                              <span className="flex-1 font-medium">{v.category}{v.notes ? ` · ${v.notes}` : ""}</span>
+                              <span className="text-emerald-700 font-semibold w-20 text-right shrink-0">{formatCurrency(v.montantTTC)}</span>
+                              <span className="text-muted-foreground w-14 text-right shrink-0">{v.tauxTVA}% TVA</span>
+                              <div className="flex items-center gap-0.5 ml-1 shrink-0">
+                                <button onClick={() => openVirEdit(v.id)} className="text-muted-foreground hover:text-foreground p-1">
+                                  <Pencil className="h-3 w-3" />
+                                </button>
+                                <button onClick={() => deleteVirement(v.id)} className="text-muted-foreground hover:text-red-600 p-1">
+                                  <Trash2 className="h-3 w-3" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="px-3 py-2.5 text-xs text-muted-foreground italic">Aucun virement ce mois-ci</p>
+                      )}
+                    </div>
+
+                    {/* P&L waterfall */}
+                    <div>
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Compte de résultat</p>
+                      <div className="space-y-1.5 text-sm max-w-md">
+                        <WFRow label="CA Brut" value={row.cabrut} color="text-emerald-700" bold />
+                        {row.canet !== row.cabrut && (
+                          <WFRow label="CA Net (après remises)" value={row.canet} color="text-emerald-600" indent />
+                        )}
+                        <Separator className="my-2" />
+                        <WFRow label="Charges variables (factures)" value={-row.chargesVariablesHT} color="text-red-600" indent />
+                        <WFRow label="Charges fixes (mensuel)" value={-row.chargesFixesHT} color="text-red-600" indent />
+                        <WFRow label="Total charges HT" value={-row.totalChargesHT} color="text-red-700" bold />
+                        <Separator className="my-2" />
+                        <WFRow label="Résultat brut" value={row.resultatBrut} color={row.resultatBrut >= 0 ? "text-emerald-700" : "text-red-600"} bold />
+                        <WFRow label={`IS estimé (15%/25%)`} value={-row.isEstime} color="text-amber-600" indent />
+                        <Separator className="my-2" />
+                        <WFRow label="Résultat net disponible" value={row.resultatNet} color={row.resultatNet >= 0 ? "text-emerald-700" : "text-red-600"} bold large />
+                        <Separator className="my-2" />
+                        <WFRow label="TVA collectée" value={row.tvaCollectee} color="text-muted-foreground" indent small />
+                        <WFRow label="TVA déductible" value={-row.tvaDeductible} color="text-muted-foreground" indent small />
+                        <WFRow label="TVA nette à reverser" value={row.tvaNette} color={row.tvaNette > 0 ? "text-amber-600" : "text-emerald-600"} indent small />
+                      </div>
+                    </div>
                   </div>
-                </div>
-              )}
+                )
+              })()}
             </div>
           )
         })}
@@ -480,7 +559,7 @@ export function Revenue() {
       <Dialog open={virOpen} onOpenChange={setVirOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Ajouter un virement</DialogTitle>
+            <DialogTitle>{virEditId ? "Modifier le virement" : "Ajouter un virement"}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-4">
             <div className="space-y-1.5">
@@ -525,7 +604,7 @@ export function Revenue() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setVirOpen(false)}>Annuler</Button>
-            <Button onClick={handleVirSave} disabled={virTTC <= 0}>Enregistrer</Button>
+            <Button onClick={handleVirSave} disabled={virTTC <= 0}>{virEditId ? "Mettre à jour" : "Enregistrer"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
